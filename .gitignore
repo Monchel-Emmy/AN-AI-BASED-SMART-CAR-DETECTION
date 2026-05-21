@@ -1,0 +1,18 @@
+# Python
+backend/__pycache__/
+backend/*.pyc
+backend/dataset/
+backend/accident_model.pth
+
+# Logs
+api/config/whatsapp.log
+
+# Uploads (accident images)
+uploads/
+
+# Temp files
+dashboard/auth/make_hash.php
+
+# Environment / secrets (if added later)
+.env
+*.env
