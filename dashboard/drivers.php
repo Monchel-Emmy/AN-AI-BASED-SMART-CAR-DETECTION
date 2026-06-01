@@ -22,6 +22,14 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 trim($_POST['license_number']),
                 trim($_POST['address']),
             ]);
+            $newDriverId = (int)$db->lastInsertId();
+
+            // Assign vehicle to this driver if selected
+            if (!empty($_POST['vehicle_id'])) {
+                $db->prepare("UPDATE vehicles SET driver_id = ? WHERE id = ?")
+                   ->execute([$newDriverId, (int)$_POST['vehicle_id']]);
+            }
+
             $msg = ['type' => 'success', 'text' => 'Driver registered successfully.'];
         } catch (PDOException $e) {
             $msg = ['type' => 'error', 'text' => 'Error: ' . $e->getMessage()];
@@ -34,6 +42,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     }
 
     if ($action === 'edit') {
+        $driverId = (int)$_POST['id'];
         $stmt = $db->prepare("
             UPDATE drivers SET full_name=?, phone=?, email=?, license_number=?, address=?
             WHERE id=?
@@ -45,8 +54,19 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 trim($_POST['email']),
                 trim($_POST['license_number']),
                 trim($_POST['address']),
-                (int)$_POST['id'],
+                $driverId,
             ]);
+
+            // Unassign driver from any vehicle they were previously assigned to
+            $db->prepare("UPDATE vehicles SET driver_id = NULL WHERE driver_id = ?")
+               ->execute([$driverId]);
+
+            // Assign to new vehicle if selected
+            if (!empty($_POST['vehicle_id'])) {
+                $db->prepare("UPDATE vehicles SET driver_id = ? WHERE id = ?")
+                   ->execute([$driverId, (int)$_POST['vehicle_id']]);
+            }
+
             $msg = ['type' => 'success', 'text' => 'Driver updated successfully.'];
         } catch (PDOException $e) {
             $msg = ['type' => 'error', 'text' => 'Error: ' . $e->getMessage()];
@@ -55,15 +75,42 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 }
 
 // Fetch for edit
-$editDriver = null;
+$editDriver       = null;
+$editDriverVehicle = null;
 if (isset($_GET['edit'])) {
-    $editDriver = $db->prepare("SELECT * FROM drivers WHERE id = ?");
-    $editDriver->execute([(int)$_GET['edit']]);
-    $editDriver = $editDriver->fetch();
+    $s = $db->prepare("SELECT * FROM drivers WHERE id = ?");
+    $s->execute([(int)$_GET['edit']]);
+    $editDriver = $s->fetch();
+
+    if ($editDriver) {
+        // Find which vehicle is currently assigned to this driver
+        $sv = $db->prepare("SELECT id FROM vehicles WHERE driver_id = ? LIMIT 1");
+        $sv->execute([$editDriver['id']]);
+        $editDriverVehicle = $sv->fetchColumn();
+    }
 }
 
-// List all drivers
-$drivers = $db->query("SELECT * FROM drivers ORDER BY created_at DESC")->fetchAll();
+// All vehicles with their device info for the dropdown
+$vehicles = $db->query("
+    SELECT v.id, v.plate_number, v.make, v.model,
+           d.device_code,
+           dr.full_name AS current_driver
+    FROM vehicles v
+    LEFT JOIN devices d  ON d.vehicle_id = v.id
+    LEFT JOIN drivers dr ON dr.id = v.driver_id
+    ORDER BY v.plate_number
+")->fetchAll();
+
+// List all drivers with their assigned vehicle and device
+$drivers = $db->query("
+    SELECT dr.*,
+           v.plate_number, v.make, v.model,
+           d.device_code
+    FROM drivers dr
+    LEFT JOIN vehicles v ON v.driver_id = dr.id
+    LEFT JOIN devices d  ON d.vehicle_id = v.id
+    ORDER BY dr.created_at DESC
+")->fetchAll();
 
 $pageTitle = 'Drivers';
 require_once 'includes/header.php';
@@ -113,6 +160,36 @@ require_once 'includes/header.php';
                     <input type="text" name="address"
                            value="<?= htmlspecialchars($editDriver['address'] ?? '') ?>">
                 </div>
+
+                <!-- Vehicle / Device Assignment -->
+                <div class="form-group full">
+                    <label>Assign Vehicle & Device</label>
+                    <select name="vehicle_id">
+                        <option value="">— No vehicle assigned —</option>
+                        <?php foreach ($vehicles as $v):
+                            $selected = ($editDriverVehicle == $v['id']) ? 'selected' : '';
+                            $label    = htmlspecialchars($v['plate_number']);
+                            if ($v['make'])        $label .= ' — ' . htmlspecialchars($v['make'] . ' ' . $v['model']);
+                            if ($v['device_code']) $label .= ' 📡 ' . htmlspecialchars($v['device_code']);
+
+                            // Show if already taken by another driver
+                            $takenNote = '';
+                            if ($v['current_driver'] && $editDriver && $v['current_driver'] !== $editDriver['full_name']) {
+                                $takenNote = ' (currently: ' . htmlspecialchars($v['current_driver']) . ')';
+                            } elseif ($v['current_driver'] && !$editDriver) {
+                                $takenNote = ' (currently: ' . htmlspecialchars($v['current_driver']) . ')';
+                            }
+                        ?>
+                        <option value="<?= $v['id'] ?>" <?= $selected ?>>
+                            <?= $label . $takenNote ?>
+                        </option>
+                        <?php endforeach; ?>
+                    </select>
+                    <small style="color:var(--text-muted);margin-top:4px;display:block">
+                        The device assigned to the selected vehicle will automatically be linked to this driver.
+                        Vehicles with 📡 already have a device installed.
+                    </small>
+                </div>
             </div>
             <div class="form-actions">
                 <button type="submit" class="btn btn-primary">
@@ -137,13 +214,15 @@ require_once 'includes/header.php';
                     <th>Phone</th>
                     <th>Email</th>
                     <th>License</th>
+                    <th>Vehicle</th>
+                    <th>Device</th>
                     <th>Registered</th>
                     <th>Actions</th>
                 </tr>
             </thead>
             <tbody>
                 <?php if (empty($drivers)): ?>
-                <tr><td colspan="7" class="empty">No drivers registered yet.</td></tr>
+                <tr><td colspan="9" class="empty">No drivers registered yet.</td></tr>
                 <?php else: ?>
                 <?php foreach ($drivers as $d): ?>
                 <tr>
@@ -152,6 +231,21 @@ require_once 'includes/header.php';
                     <td><?= htmlspecialchars($d['phone']) ?></td>
                     <td><?= htmlspecialchars($d['email'] ?? '—') ?></td>
                     <td><?= htmlspecialchars($d['license_number']) ?></td>
+                    <td>
+                        <?php if ($d['plate_number']): ?>
+                            <span style="font-weight:600"><?= htmlspecialchars($d['plate_number']) ?></span>
+                            <span style="color:var(--text-muted);font-size:12px">
+                                <?= htmlspecialchars($d['make'] . ' ' . $d['model']) ?>
+                            </span>
+                        <?php else: ?>—<?php endif; ?>
+                    </td>
+                    <td>
+                        <?php if ($d['device_code']): ?>
+                            <span class="badge badge-active">📡 <?= htmlspecialchars($d['device_code']) ?></span>
+                        <?php else: ?>
+                            <span style="color:var(--text-muted);font-size:12px">None</span>
+                        <?php endif; ?>
+                    </td>
                     <td><?= date('M d, Y', strtotime($d['created_at'])) ?></td>
                     <td>
                         <a href="drivers.php?edit=<?= $d['id'] ?>" class="btn btn-ghost btn-sm">✏️ Edit</a>

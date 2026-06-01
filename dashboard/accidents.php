@@ -101,7 +101,7 @@ require_once 'includes/header.php';
                     <th>Phone</th>
                     <th>Severity</th>
                     <th>Accel (X/Y/Z)</th>
-                    <th>Gyro (X/Y/Z)</th>
+                    <th>Mag / Heading / Impact</th>
                     <th>Location</th>
                     <th>Image</th>
                 </tr>
